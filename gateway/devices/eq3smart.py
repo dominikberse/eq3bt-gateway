@@ -216,7 +216,7 @@ class Device(HassMqttDevice):
         except asyncio.CancelledError:
             raise
         except:
-            logging.exception()
+            logging.exception(f"Exception in polling loop")
 
     async def _update(self):
 

@@ -89,7 +89,7 @@ class Device(HassMqttDevice):
                 logging.exception(f"{log} failed (retry: {i})")
 
         logging.error(f"{log} not successful")
-        raise Exception()
+        raise Exception(f"{log} failed")
 
     async def _bluetooth_ctl_pair(self):
         """

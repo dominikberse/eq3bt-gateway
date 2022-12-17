@@ -6,8 +6,7 @@ import sys
 
 from datetime import datetime
 
-from eq3bt.eq3btsmart import Thermostat
-from eq3bt.structures import Status
+from eq3bt.eq3btsmart import Thermostat, Mode
 from eq3bt.eq3btsmart import (
     PROP_WRITE_HANDLE,
     PROP_NTFY_HANDLE,
@@ -90,6 +89,7 @@ class Device(HassMqttDevice):
                 logging.exception(f"{log} failed (retry: {i})")
 
         logging.error(f"{log} not successful")
+        raise Exception()
 
     async def _bluetooth_ctl_pair(self):
         """
@@ -181,6 +181,7 @@ class Device(HassMqttDevice):
             "object_id": self._id,
             "name": self._config.optional("name"),
             "device": {
+                "name": self._config.optional("name"),
                 "manufacturer": "Equiva",
                 "model": "eQ-3 Bluetooth Smart",
                 "connections": [["mac", self._ble._address]],
@@ -191,6 +192,10 @@ class Device(HassMqttDevice):
             "temperature_state_topic": "~/temperature_state",
             "mode_command_topic": "~/mode_set",
             "mode_state_topic": "~/mode_state",
+            "availability_topic": "~/availability",
+            "min_temp": EQ3BT_MIN_TEMP,
+            "max_temp": EQ3BT_MAX_TEMP,
+            "precision": 0.5,
         }
 
         await self._messenger.publish(self, "config", message)
@@ -222,9 +227,7 @@ class Device(HassMqttDevice):
         await self._retry(self._query, f"Update {self}", self._message)
 
         # push new state
-        await self._messenger.publish(
-            self, "temperature_state", self._thermostat.target_temperature
-        )
+        self._publish_target_temp(self._thermostat.target_temperature)
 
     async def _mqtt_temperature_set(self, temperature):
         logging.info(f"Setting temp to {temperature}")
@@ -238,4 +241,17 @@ class Device(HassMqttDevice):
         )
 
         # push new state
+        self._publish_target_temp(temperature)
+
+    async def _publish_target_temp(self, temperature):
+        if temperature == Mode.Unknown:
+            await self._messenger.publish(self, "availability", "offline")
+            return
+
+        if temperature == EQ3BT_MIN_TEMP:
+            await self._messenger.publish(self, "temperature_state", temperature)
+        if temperature == EQ3BT_MAX_TEMP:
+            await self._messenger.publish(self, "temperature_state", temperature)
+
+        await self._messenger.publish(self, "availability", "online")
         await self._messenger.publish(self, "temperature_state", temperature)

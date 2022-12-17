@@ -227,7 +227,7 @@ class Device(HassMqttDevice):
         await self._retry(self._query, f"Update {self}", self._message)
 
         # push new state
-        self._publish_device_state(self._thermostat.target_temperature)
+        await self._publish_device_state(self._thermostat.target_temperature)
 
     async def _mqtt_temperature_set(self, temperature):
         logging.info(f"Setting temp to {temperature}")
@@ -241,7 +241,7 @@ class Device(HassMqttDevice):
         )
 
         # push new state
-        self._publish_device_state(temperature)
+        await self._publish_device_state(temperature)
 
     async def _publish_device_state(self, temperature):
         if temperature == Mode.Unknown:

@@ -97,12 +97,15 @@ class Device(HassMqttDevice):
         """
 
         p = pexpect.spawn("bluetoothctl", encoding="utf-8")
-        p.logfile_read = sys.stdout
+
+        if logging.getLogger().level <= logging.DEBUG:
+            # log to console if debugging
+            p.logfile_read = sys.stdout
 
         deleted = [f"DEL.*{self._ble.address}", f"{self._ble.address} not available"]
         detected = [f"NEW.*{self._ble.address}"]
         passkey = ["Enter passkey.*:"]
-        paired = ["Paired: yes"]
+        paired = ["Paired: yes", "Failed to pair"]
         trusted = ["Trusted: yes"]
 
         # start scanning
@@ -119,11 +122,14 @@ class Device(HassMqttDevice):
 
             # pair and trust device
             p.sendline(f"pair {self._ble.address}")
-            p.expect(passkey, timeout=10)
+            if p.expect(passkey, timeout=10) != 0:
+                raise Exception("Passkey not accepted")
             p.sendline(self._pass)
-            p.expect(paired, timeout=10)
+            if p.expect(paired, timeout=10) != 0:
+                raise Exception("Failed to pair")
             p.sendline(f"trust {self._ble.address}")
-            p.expect(trusted, timeout=10)
+            if p.expect(trusted, timeout=10) != 0:
+                raise Exception("Failed to trust")
 
             # disconnect
             p.expect("#")

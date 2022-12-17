@@ -42,6 +42,8 @@ class HassMqttDevice:
                 try:
                     # get handler from command name
                     handler = getattr(self, f"_mqtt_{command}")
+                except asyncio.CancelledError:
+                    raise
                 except:
                     logging.warning(f"Missing handler for command {command}")
                     continue

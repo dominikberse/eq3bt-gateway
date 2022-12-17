@@ -82,6 +82,8 @@ class Device(HassMqttDevice):
             try:
                 await callback(*args, **kwargs)
                 return
+            except asyncio.CancelledError:
+                raise
             except KeyboardInterrupt:
                 return
             except:
@@ -200,6 +202,8 @@ class Device(HassMqttDevice):
             logging.debug(f"{self} polling new state")
             await self._update()
             await asyncio.sleep(self._polling)
+        except asyncio.CancelledError:
+            raise
         except:
             logging.exception()
 

@@ -37,7 +37,11 @@ class HassMqttDevice:
 
                 # get command from topic and load message
                 command = message.topic.split("/")[-1]
-                payload = json.loads(message.payload.decode())
+                payload = None
+
+                if message.payload:
+                    # should be compatible with Home Assistant messages
+                    payload = json.loads(message.payload.decode())
 
                 try:
                     # get handler from command name

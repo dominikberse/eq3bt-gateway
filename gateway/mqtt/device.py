@@ -39,10 +39,6 @@ class HassMqttDevice:
                 command = message.topic.split("/")[-1]
                 payload = None
 
-                if message.payload:
-                    # should be compatible with Home Assistant messages
-                    payload = json.loads(message.payload.decode())
-
                 try:
                     # get handler from command name
                     handler = getattr(self, f"_mqtt_{command}")
@@ -51,6 +47,10 @@ class HassMqttDevice:
                 except:
                     logging.warning(f"Missing handler for command {command}")
                     continue
+
+                if message.payload:
+                    # should be compatible with Home Assistant messages
+                    payload = json.loads(message.payload.decode())
 
                 await handler(payload)
 

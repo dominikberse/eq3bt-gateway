@@ -33,6 +33,9 @@ class Tasks:
             await task
         except:
             logging.exception("Task failed")
+            # force cancellation of all tasks
+            raise
+
         if name:
             logging.debug(f"{name} completed")
 

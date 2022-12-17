@@ -9,6 +9,7 @@ from mqtt import HassMqttMessenger
 
 from tools import Tasks
 from tools import Config
+from tools import Ble
 
 
 logging.basicConfig(level=logging.INFO)
@@ -16,6 +17,7 @@ logging.basicConfig(level=logging.INFO)
 
 async def run(args):
     async with AsyncExitStack() as stack:
+        Ble.init()
 
         # load config
         config = Config(args.config)

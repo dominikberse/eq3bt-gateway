@@ -15,10 +15,10 @@ logging.getLogger("bleak.backends").setLevel(logging.INFO)
 
 
 class Ble(AsyncExitStack):
-    __semaphore = asyncio.Semaphore(1)
+    __semaphore = None
     __registry = {}
     __detected = None
-    __event = asyncio.Event()
+    __event = None
 
     def __init__(self, address, on_connect=None, on_detect=None):
         super().__init__()
@@ -32,6 +32,13 @@ class Ble(AsyncExitStack):
         Ble.__registry[address] = self
 
         logging.info(f"Registered {self._address}")
+
+    @staticmethod
+    def init():
+
+        # python 3.9 and below must create semaphore on asyncio main loop
+        Ble.__semaphore = asyncio.Semaphore(1)
+        Ble.__event = asyncio.Event()
 
     @staticmethod
     def _scanner_callback(handle, advertising_data):

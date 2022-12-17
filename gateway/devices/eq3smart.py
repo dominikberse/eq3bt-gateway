@@ -82,6 +82,8 @@ class Device(HassMqttDevice):
             try:
                 await callback(*args, **kwargs)
                 return
+            except KeyboardInterrupt:
+                return
             except:
                 logging.exception(f"{log} failed (retry: {i})")
 
@@ -102,6 +104,7 @@ class Device(HassMqttDevice):
         trusted = ["Trusted: yes"]
 
         # start scanning
+        p.sendline()
         p.expect("#")
         p.sendline(f"remove {self._ble.address}")
         p.expect(deleted)

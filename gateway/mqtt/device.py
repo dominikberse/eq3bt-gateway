@@ -9,9 +9,6 @@ class HassMqttDevice:
         self._config = config
         self._messenger = messenger
 
-        # check for polling
-        self._polling = self._config.optional("poll", 300)
-
     def __str__(self):
         return f"{self._id} ({self._config.optional('mac')})"
 

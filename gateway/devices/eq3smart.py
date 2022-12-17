@@ -33,6 +33,8 @@ from eq3bt.eq3btsmart import (
     EQ3BT_ON_TEMP,
 )
 
+from bleak.exc import BleakDeviceNotFoundError
+
 from mqtt import HassMqttDevice
 from tools import Ble
 
@@ -55,6 +57,7 @@ class Device(HassMqttDevice):
         # validate device data
         self._ble = Ble(self._config.require("mac"))
         self._pass = self._config.optional("pass")
+        self._polling = self._config.optional("poll", 300)
 
         # retained data
         self._thermostat = Thermostat(None, self, DummyConnection)
@@ -136,15 +139,21 @@ class Device(HassMqttDevice):
         self._event.set()
 
     async def _write(self, value):
-        async with self._ble as client:
-            await client.write_gatt_char(PROP_WRITE_HANDLE - 1, value)
+        try:
+            async with self._ble as client:
+                await client.write_gatt_char(PROP_WRITE_HANDLE - 1, value)
+        except BleakDeviceNotFoundError:
+            self._ble.lost()
 
     async def _query(self, value):
-        async with self._ble as client:
-            await client.start_notify(PROP_NTFY_HANDLE - 1, self._on_notify)
-            await client.write_gatt_char(PROP_WRITE_HANDLE - 1, self._message)
+        try:
+            async with self._ble as client:
+                await client.start_notify(PROP_NTFY_HANDLE - 1, self._on_notify)
+                await client.write_gatt_char(PROP_WRITE_HANDLE - 1, self._message)
 
-            await asyncio.wait([self._event.wait()], timeout=15)
+                await asyncio.wait([self._event.wait()], timeout=15)
+        except BleakDeviceNotFoundError:
+            self._ble.lost()
 
     async def setup(self):
 
@@ -177,11 +186,15 @@ class Device(HassMqttDevice):
         self._ready.set()
 
     async def poll(self):
-        if not self._polling:
+        if self._polling is None:
+            logging.info(f"{self} not polling")
             return
 
         await self._ready.wait()
+        logging.info(f"{self} polling every {self._polling}s")
+
         try:
+            logging.debug(f"{self} polling new state")
             await self._update()
             await asyncio.sleep(self._polling)
         except:
@@ -201,6 +214,7 @@ class Device(HassMqttDevice):
         )
 
     async def _mqtt_temperature_set(self, temperature):
+        logging.info(f"Setting temp to {temperature}")
 
         # generate message
         self._thermostat.target_temperature = temperature
@@ -211,6 +225,4 @@ class Device(HassMqttDevice):
         )
 
         # push new state
-        await self._messenger.publish(
-            self, "temperature_state", self._thermostat.target_temperature
-        )
+        await self._messenger.publish(self, "temperature_state", temperature)

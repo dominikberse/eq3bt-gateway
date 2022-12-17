@@ -52,7 +52,7 @@ class Ble(AsyncExitStack):
                 Ble.__event.set()
 
     @staticmethod
-    async def _unsafe_discover(timeout=5.0):
+    async def _unsafe_discover(timeout=15.0):
         logging.info("Scanner on")
 
         Ble.__detected = set()
@@ -112,3 +112,8 @@ class Ble(AsyncExitStack):
                 pass
             else:
                 raise
+
+    def lost(self):
+        logging.warning(f"Lost connection to {self}")
+
+        self._handle = None

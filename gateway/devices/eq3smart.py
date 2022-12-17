@@ -210,12 +210,13 @@ class Device(HassMqttDevice):
         logging.info(f"{self} polling every {self._polling}s")
 
         try:
+            await asyncio.sleep(self._polling)
             logging.debug(f"{self} polling new state")
             await self._update()
-            await asyncio.sleep(self._polling)
         except asyncio.CancelledError:
             raise
         except:
+            # suppress error and continue polling
             logging.exception(f"Exception in polling loop")
 
     async def _update(self):

@@ -37,6 +37,7 @@ async def run(args):
                 await device.setup()
 
                 tasks.spawn(device.listen(), f"device {device}")
+                tasks.spawn(device.poll(), f"polling {device}")
             except:
                 logging.exception(f"Failed to module {module_name} for {id}")
                 return

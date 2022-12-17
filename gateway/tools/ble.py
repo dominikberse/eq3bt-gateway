@@ -65,10 +65,8 @@ class Ble(AsyncExitStack):
 
         for address in Ble.__detected:
             device = Ble.__registry[address]
-            logging.info("ON DETECT")
 
             if device._on_detect:
-                logging.info("ON DETECT")
                 client = BleakClient(device._handle)
                 await device._on_detect(client)
 
@@ -92,7 +90,7 @@ class Ble(AsyncExitStack):
                 done, _ = await asyncio.wait([acquire], timeout=10.0)
 
                 if not done:
-                    logging.info(f"{self._address} still waiting for semaphore...")
+                    logging.warning(f"{self._address} still waiting for semaphore...")
                 else:
                     break
 

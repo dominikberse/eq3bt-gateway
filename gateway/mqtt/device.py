@@ -1,5 +1,6 @@
 import json
 import logging
+import asyncio
 
 
 class HassMqttDevice:
@@ -7,6 +8,9 @@ class HassMqttDevice:
         self._id = id
         self._config = config
         self._messenger = messenger
+
+        # check for polling
+        self._polling = self._config.optional("poll", 300)
 
     def __str__(self):
         return f"{self._id} ({self._config.optional('mac')})"
@@ -30,7 +34,9 @@ class HassMqttDevice:
         # listen for incoming MQTT messages
         async with self._messenger.filtered_messages(self) as messages:
             async for message in messages:
-                logging.info(f"Received message on {message.topic}:\n{message.payload}")
+                logging.debug(
+                    f"Received message on {message.topic}:\n{message.payload}"
+                )
 
                 # get command from topic and load message
                 command = message.topic.split("/")[-1]
@@ -44,6 +50,12 @@ class HassMqttDevice:
                     continue
 
                 await handler(payload)
+
+    async def poll(self):
+        """
+        Implement polling
+        """
+        pass
 
     async def setup(self):
         """

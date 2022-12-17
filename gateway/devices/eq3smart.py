@@ -6,6 +6,7 @@ import sys
 
 from datetime import datetime
 
+from eq3bt.eq3btsmart import Thermostat
 from eq3bt.structures import Status
 from eq3bt.eq3btsmart import (
     PROP_WRITE_HANDLE,
@@ -36,6 +37,17 @@ from mqtt import HassMqttDevice
 from tools import Ble
 
 
+class DummyConnection:
+    def __init__(self, address, interface):
+        self._device = interface
+
+    def make_request(self, handle, value):
+        self._device._message = value
+
+    def set_callback(self, *args, **kwargs):
+        pass
+
+
 class Device(HassMqttDevice):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -45,18 +57,16 @@ class Device(HassMqttDevice):
         self._pass = self._config.optional("pass")
 
         # retained data
-        self._temp = EQ3BT_MIN_TEMP
+        self._thermostat = Thermostat(None, self, DummyConnection)
 
         # listening event
+        self._ready = asyncio.Event()
         self._event = asyncio.Event()
         self._message = None
 
     @property
     def component(self):
         return "climate"
-
-    def _valid_temp(self, temp):
-        return temp > EQ3BT_MIN_TEMP and temp < EQ3BT_MAX_TEMP
 
     async def _retry(self, callback, log, *args, retries=3, **kwargs):
         """
@@ -118,88 +128,33 @@ class Device(HassMqttDevice):
             p.close()
 
     async def _on_notify(self, characteristic, data):
-        if data[0] == PROP_INFO_RETURN and data[1] == 1:
-            status = Status.parse(data)
-            logging.debug("Parsed status: %s", status)
 
-            self._raw_mode = status.mode
-            self._valve_state = status.valve
-            self._target_temperature = status.target_temp
+        # parse message
+        self._thermostat.handle_notification(data)
 
-            if status.mode.BOOST:
-                self._mode = Mode.Boost
-            elif status.mode.AWAY:
-                self._mode = Mode.Away
-                self._away_end = status.away
-            elif status.mode.MANUAL:
-                if status.target_temp == EQ3BT_OFF_TEMP:
-                    self._mode = Mode.Closed
-                elif status.target_temp == EQ3BT_ON_TEMP:
-                    self._mode = Mode.Open
-                else:
-                    self._mode = Mode.Manual
-            else:
-                self._mode = Mode.Auto
-
-            presets = status.presets
-            if presets:
-                self._window_open_temperature = presets.window_open_temp
-                self._window_open_time = presets.window_open_time
-                self._comfort_temperature = presets.comfort_temp
-                self._eco_temperature = presets.eco_temp
-                self._temperature_offset = presets.offset
-            else:
-                self._window_open_temperature = None
-                self._window_open_time = None
-                self._comfort_temperature = None
-                self._eco_temperature = None
-                self._temperature_offset = None
-
-            _LOGGER.debug("Valve state:      %s", self._valve_state)
-            _LOGGER.debug("Mode:             %s", self.mode_readable)
-            _LOGGER.debug("Target temp:      %s", self._target_temperature)
-            _LOGGER.debug("Away end:         %s", self._away_end)
-            _LOGGER.debug("Window open temp: %s", self._window_open_temperature)
-            _LOGGER.debug("Window open time: %s", self._window_open_time)
-            _LOGGER.debug("Comfort temp:     %s", self._comfort_temperature)
-            _LOGGER.debug("Eco temp:         %s", self._eco_temperature)
-            _LOGGER.debug("Temp offset:      %s", self._temperature_offset)
-
+        # notify about received status
         self._event.set()
 
     async def _write(self, value):
         async with self._ble as client:
             await client.write_gatt_char(PROP_WRITE_HANDLE - 1, value)
 
-    async def _update(self):
-        self._event.clear()
-        time = datetime.now()
-        value = struct.pack(
-            "BBBBBBB",
-            PROP_INFO_QUERY,
-            time.year % 100,
-            time.month,
-            time.day,
-            time.hour,
-            time.minute,
-            time.second,
-        )
-
+    async def _query(self, value):
         async with self._ble as client:
             await client.start_notify(PROP_NTFY_HANDLE - 1, self._on_notify)
-            await client.write_gatt_char(PROP_WRITE_HANDLE - 1, value)
+            await client.write_gatt_char(PROP_WRITE_HANDLE - 1, self._message)
 
-            await asyncio.wait([self._event.wait()], timeout=10)
+            await asyncio.wait([self._event.wait()], timeout=15)
 
     async def setup(self):
 
         # pair device if required
         if self._pass is not None:
-            await self._retry(self._bluetooth_ctl_pair, f"pairing {self}")
+            await self._retry(self._bluetooth_ctl_pair, f"Pair {self}")
+
+            logging.info(f"Paired {self}")
 
     async def config(self):
-        await self._retry(self._update, f"updating {self}")
-
         message = {
             "~": self._messenger.device_topic(self),
             "unique_id": self._id,
@@ -210,6 +165,8 @@ class Device(HassMqttDevice):
                 "model": "eQ-3 Bluetooth Smart",
                 "connections": [["mac", self._ble._address]],
             },
+            "modes": ["off", "heat", "auto"],
+            "preset_modes": ["boost"],
             "temperature_command_topic": "~/temperature_set",
             "temperature_state_topic": "~/temperature_state",
             "mode_command_topic": "~/mode_set",
@@ -217,21 +174,43 @@ class Device(HassMqttDevice):
         }
 
         await self._messenger.publish(self, "config", message)
-        await self._messenger.publish(self, "temperature_state", self._temp)
+        self._ready.set()
 
-    async def _mqtt_temperature_set(self, temperature):
-        if not self._valid_temp(temperature):
-            logging.warning(f"Invalid temperature {temperature}")
+    async def poll(self):
+        if not self._polling:
             return
 
-        dev_temp = int(temperature * 2)
+        await self._ready.wait()
+        try:
+            await self._update()
+            await asyncio.sleep(self._polling)
+        except:
+            logging.exception()
 
-        # set device mode
-        if temperature == EQ3BT_OFF_TEMP or temperature == EQ3BT_ON_TEMP:
-            message = struct.pack("BB", PROP_MODE_WRITE, dev_temp | 0x40)
+    async def _update(self):
 
-        # set actual temperature
-        else:
-            message = struct.pack("BB", PROP_TEMPERATURE_WRITE, dev_temp)
+        # generate message
+        self._thermostat.update()
 
-        await self._retry(self._write, f"set temp on {self} to {temperature}", message)
+        # send message
+        await self._retry(self._query, f"Update {self}", self._message)
+
+        # push new state
+        await self._messenger.publish(
+            self, "temperature_state", self._thermostat.target_temperature
+        )
+
+    async def _mqtt_temperature_set(self, temperature):
+
+        # generate message
+        self._thermostat.target_temperature = temperature
+
+        # send message
+        await self._retry(
+            self._write, f"Set temp on {self} to {temperature}", self._message
+        )
+
+        # push new state
+        await self._messenger.publish(
+            self, "temperature_state", self._thermostat.target_temperature
+        )

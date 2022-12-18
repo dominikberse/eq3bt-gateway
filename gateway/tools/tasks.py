@@ -32,7 +32,7 @@ class Tasks:
         try:
             await task
         except:
-            logging.exception("Task failed")
+            logging.exception(f"{name} failed")
             # force cancellation of all tasks
             # depending on the configuration, this should lead to service restart
             await self._shutdown()

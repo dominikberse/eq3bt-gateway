@@ -61,6 +61,7 @@ class Device(HassMqttDevice):
         # retained data
         self._thermostat = Thermostat(None, self, DummyConnection)
         self._availability = False
+        self._temperature = None
 
         # listening event
         self._ready = asyncio.Event()
@@ -218,20 +219,35 @@ class Device(HassMqttDevice):
         self._thermostat.update()
 
         # send message
-        self.set_availability(
-            await self._retry(
-                self._query,
-                f"Update {self}",
-                raise_exception=False,
-                args=[self._message],
-            )
+        available = await self._retry(
+            self._query,
+            f"Update {self}",
+            raise_exception=False,
+            args=[self._message],
         )
+
+        # update settings if device is available again
+        # currently server settings have priority
+        # TODO: write some kind of state tracking system
+        if available and not self._availability:
+            if self._temperature:
+                self._mqtt_temperature_set(self._temperature)
+
+        self.set_availability(available)
+
+        # check if this is the first time the state is retrieved
+        # store current state as application state
+        if self._availability:
+            if self._temperature is None:
+                self._temperature = self._thermostat.target_temperature
 
         # push new state
         await self._publish_device_state(self._thermostat.target_temperature)
 
     async def _mqtt_temperature_set(self, temperature):
         logging.info(f"Setting temp to {temperature}")
+
+        self._temperature = temperature
 
         # generate message
         self._thermostat.target_temperature = temperature

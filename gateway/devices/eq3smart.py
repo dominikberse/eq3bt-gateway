@@ -60,6 +60,7 @@ class Device(HassMqttDevice):
 
         # retained data
         self._thermostat = Thermostat(None, self, DummyConnection)
+        self._availability = False
 
         # listening event
         self._ready = asyncio.Event()
@@ -70,26 +71,12 @@ class Device(HassMqttDevice):
     def component(self):
         return "climate"
 
-    async def _retry(self, callback, log, *args, retries=3, **kwargs):
-        """
-        Shorthand for retries
-        """
+    def set_availability(self, value):
+        if value == self._availability:
+            return
 
-        logging.debug(f"{log}...")
-
-        for i in range(retries):
-            try:
-                await callback(*args, **kwargs)
-                return
-            except asyncio.CancelledError:
-                raise
-            except KeyboardInterrupt:
-                return
-            except:
-                logging.exception(f"{log} failed (retry: {i})")
-
-        logging.error(f"{log} not successful")
-        raise Exception(f"{log} failed")
+        logging.info(f"{self} availability: {value}")
+        self._availability = value
 
     async def _bluetooth_ctl_pair(self):
         """
@@ -184,7 +171,8 @@ class Device(HassMqttDevice):
                 "name": self._config.optional("name"),
                 "manufacturer": "Equiva",
                 "model": "eQ-3 Bluetooth Smart",
-                "connections": [["mac", self._ble._address]],
+                "connections": [["mac", self._ble.address]],
+                "identifiers": self._ble.address,
             },
             "modes": ["off", "heat", "auto"],
             "preset_modes": ["boost"],
@@ -192,13 +180,17 @@ class Device(HassMqttDevice):
             "temperature_state_topic": "~/temperature_state",
             "mode_command_topic": "~/mode_set",
             "mode_state_topic": "~/mode_state",
-            "availability_topic": "~/availability",
+            "availability_topic": "~/available",
+            "payload_available": "True",
+            "payload_not_available": "False",
             "min_temp": EQ3BT_MIN_TEMP,
             "max_temp": EQ3BT_MAX_TEMP,
             "precision": 0.5,
         }
 
         await self._messenger.publish(self, "config", message)
+        await self._update()
+
         self._ready.set()
 
     async def poll(self):
@@ -209,15 +201,16 @@ class Device(HassMqttDevice):
         await self._ready.wait()
         logging.info(f"{self} polling every {self._polling}s")
 
-        try:
-            await asyncio.sleep(self._polling)
-            logging.debug(f"{self} polling new state")
-            await self._update()
-        except asyncio.CancelledError:
-            raise
-        except:
-            # suppress error and continue polling
-            logging.exception(f"Exception in polling loop")
+        while True:
+            try:
+                await asyncio.sleep(self._polling)
+                logging.debug(f"{self} polling new state")
+                await self._update()
+            except asyncio.CancelledError:
+                raise
+            except:
+                # suppress error and continue polling
+                logging.exception(f"Exception in polling loop")
 
     async def _update(self):
 
@@ -225,7 +218,14 @@ class Device(HassMqttDevice):
         self._thermostat.update()
 
         # send message
-        await self._retry(self._query, f"Update {self}", self._message)
+        self.set_availability(
+            await self._retry(
+                self._query,
+                f"Update {self}",
+                raise_exception=False,
+                args=[self._message],
+            )
+        )
 
         # push new state
         await self._publish_device_state(self._thermostat.target_temperature)
@@ -237,23 +237,28 @@ class Device(HassMqttDevice):
         self._thermostat.target_temperature = temperature
 
         # send message
-        await self._retry(
-            self._write, f"Set temp on {self} to {temperature}", self._message
+        self.set_availability(
+            await self._retry(
+                self._write,
+                f"Set temp on {self} to {temperature}",
+                raise_exception=False,
+                args=[self._message],
+            )
         )
 
         # push new state
         await self._publish_device_state(temperature)
 
     async def _publish_device_state(self, temperature):
-        if temperature == Mode.Unknown:
-            await self._messenger.publish(self, "availability", "offline")
+        if not self._availability or temperature == Mode.Unknown:
+            # deny availability if temperature has not been read
+            await self._messenger.publish(self, "available", False)
             return
 
         if temperature == EQ3BT_MIN_TEMP:
             await self._messenger.publish(self, "mode_state", "off")
-        if temperature == EQ3BT_MAX_TEMP:
+        else:
             await self._messenger.publish(self, "mode_state", "heat")
 
-        await self._messenger.publish(self, "availability", "online")
         await self._messenger.publish(self, "temperature_state", temperature)
-        await self._messenger.publish(self, "mode_state", "heat")
+        await self._messenger.publish(self, "available", True)

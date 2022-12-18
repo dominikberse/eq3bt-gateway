@@ -97,7 +97,7 @@ class Ble(AsyncExitStack):
                 done, _ = await asyncio.wait([acquire], timeout=10.0)
 
                 if not done:
-                    logging.warning(f"{self._address} still waiting for semaphore...")
+                    logging.debug(f"{self._address} still waiting for semaphore...")
                 else:
                     break
 

@@ -130,7 +130,7 @@ class Device(HassMqttDevice, RetryMixin, AvailabilityMixin, PairMixin):
                 "identifiers": self._address,
             },
             "modes": ["off", "heat", "auto"],
-            "preset_modes": ["boost"],
+            # "preset_modes": ["boost"],
             "temperature_command_topic": "~/temperature_set",
             "temperature_state_topic": "~/temperature_state",
             "mode_command_topic": "~/mode_set",

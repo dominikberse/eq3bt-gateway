@@ -6,25 +6,27 @@ import logging
 from contextlib import AsyncExitStack, suppress
 
 from mqtt import HassMqttMessenger
+from ble import BleManager
 
 from tools import Tasks
 from tools import Config
-from tools import Ble
 
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 
 
 async def run(args):
     async with AsyncExitStack() as stack:
-        Ble.init()
 
         # load config
         config = Config(args.config)
 
+        # initialize BLE connection manager
+        ble = BleManager()
+
         # connect to broker
         tasks = await stack.enter_async_context(Tasks())
-        messenger = await stack.enter_async_context(HassMqttMessenger(config))
+        mqtt = await stack.enter_async_context(HassMqttMessenger(config))
 
         # spawn task for every device
         devices = config.require("devices")
@@ -33,7 +35,7 @@ async def run(args):
             module_name = device_config.require("module")
             try:
                 module = importlib.import_module(f"devices.{module_name}")
-                device = module.Device(id, device_config, messenger)
+                device = module.Device(id, device_config, mqtt, ble)
 
                 # device specific setup if required
                 await device.setup()
@@ -54,9 +56,8 @@ def main():
     args = parser.parse_args()
 
     # run application
-    loop = asyncio.new_event_loop()
     with suppress(KeyboardInterrupt):
-        loop.run_until_complete(run(args))
+        asyncio.run(run(args))
 
 
 if __name__ == "__main__":

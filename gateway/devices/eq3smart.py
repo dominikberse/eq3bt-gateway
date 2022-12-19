@@ -1,10 +1,7 @@
 import logging
-import struct
 import pexpect
 import asyncio
 import sys
-
-from datetime import datetime
 
 from eq3bt.eq3btsmart import Thermostat, Mode
 from eq3bt.eq3btsmart import (
@@ -35,7 +32,7 @@ from eq3bt.eq3btsmart import (
 from bleak.exc import BleakDeviceNotFoundError
 
 from mqtt import HassMqttDevice
-from tools import Ble
+from ble import BleConnection
 
 
 class DummyConnection:
@@ -54,9 +51,12 @@ class Device(HassMqttDevice):
         super().__init__(*args, **kwargs)
 
         # validate device data
-        self._ble = Ble(self._config.require("mac"))
+        self._address = self._config.require("mac")
         self._pass = self._config.optional("pass")
         self._polling = self._config.optional("poll", 300)
+
+        # physical device connection
+        self._connection = BleConnection(self._address, self._ble)
 
         # retained data
         self._thermostat = Thermostat(None, self, DummyConnection)
@@ -90,8 +90,8 @@ class Device(HassMqttDevice):
             # log to console if debugging
             p.logfile_read = sys.stdout
 
-        deleted = [f"DEL.*{self._ble.address}", f"{self._ble.address} not available"]
-        detected = [f"NEW.*{self._ble.address}"]
+        deleted = [f"DEL.*{self._address}", f"{self._address} not available"]
+        detected = [f"NEW.*{self._address}"]
         passkey = ["Enter passkey.*:"]
         paired = ["Paired: yes", "Failed to pair"]
         trusted = ["Trusted: yes"]
@@ -99,7 +99,7 @@ class Device(HassMqttDevice):
         # start scanning
         p.sendline()
         p.expect("#")
-        p.sendline(f"remove {self._ble.address}")
+        p.sendline(f"remove {self._address}")
         p.expect(deleted)
         p.sendline("scan on")
 
@@ -109,13 +109,13 @@ class Device(HassMqttDevice):
             p.expect(detected, timeout=10)
 
             # pair and trust device
-            p.sendline(f"pair {self._ble.address}")
+            p.sendline(f"pair {self._address}")
             if p.expect(passkey, timeout=10) != 0:
                 raise Exception("Passkey not accepted")
             p.sendline(self._pass)
             if p.expect(paired, timeout=10) != 0:
                 raise Exception("Failed to pair")
-            p.sendline(f"trust {self._ble.address}")
+            p.sendline(f"trust {self._address}")
             if p.expect(trusted, timeout=10) != 0:
                 raise Exception("Failed to trust")
 
@@ -139,20 +139,20 @@ class Device(HassMqttDevice):
 
     async def _write(self, value):
         try:
-            async with self._ble as client:
+            async with self._connection as client:
                 await client.write_gatt_char(PROP_WRITE_HANDLE - 1, value)
         except BleakDeviceNotFoundError:
-            self._ble.lost()
+            self._connection.lost()
 
     async def _query(self, value):
         try:
-            async with self._ble as client:
+            async with self._connection as client:
                 await client.start_notify(PROP_NTFY_HANDLE - 1, self._on_notify)
                 await client.write_gatt_char(PROP_WRITE_HANDLE - 1, self._message)
 
                 await asyncio.wait([self._event.wait()], timeout=15)
         except BleakDeviceNotFoundError:
-            self._ble.lost()
+            self._connection.lost()
 
     async def setup(self):
 
@@ -164,7 +164,7 @@ class Device(HassMqttDevice):
 
     async def config(self):
         message = {
-            "~": self._messenger.device_topic(self),
+            "~": self._mqtt.device_topic(self),
             "unique_id": self._id,
             "object_id": self._id,
             "name": self._config.optional("name"),
@@ -172,8 +172,8 @@ class Device(HassMqttDevice):
                 "name": self._config.optional("name"),
                 "manufacturer": "Equiva",
                 "model": "eQ-3 Bluetooth Smart",
-                "connections": [["mac", self._ble.address]],
-                "identifiers": self._ble.address,
+                "connections": [["mac", self._address]],
+                "identifiers": self._address,
             },
             "modes": ["off", "heat", "auto"],
             "preset_modes": ["boost"],
@@ -189,7 +189,7 @@ class Device(HassMqttDevice):
             "precision": 0.5,
         }
 
-        await self._messenger.publish(self, "config", message)
+        await self._mqtt.publish(self, "config", message)
         await self._update()
 
         self._ready.set()
@@ -203,12 +203,15 @@ class Device(HassMqttDevice):
         logging.info(f"{self} polling every {self._polling}s")
 
         while True:
+            # ensure sleep problems are propagated
+            await asyncio.sleep(self._polling)
+
             try:
-                await asyncio.sleep(self._polling)
                 logging.debug(f"{self} polling new state")
                 await self._update()
             except asyncio.CancelledError:
-                raise
+                # graceful exit
+                return
             except:
                 # suppress error and continue polling
                 logging.exception(f"Exception in polling loop")
@@ -268,13 +271,13 @@ class Device(HassMqttDevice):
     async def _publish_device_state(self, temperature):
         if not self._availability or temperature == Mode.Unknown:
             # deny availability if temperature has not been read
-            await self._messenger.publish(self, "available", False)
+            await self._mqtt.publish(self, "available", False)
             return
 
         if temperature == EQ3BT_MIN_TEMP:
-            await self._messenger.publish(self, "mode_state", "off")
+            await self._mqtt.publish(self, "mode_state", "off")
         else:
-            await self._messenger.publish(self, "mode_state", "heat")
+            await self._mqtt.publish(self, "mode_state", "heat")
 
-        await self._messenger.publish(self, "temperature_state", temperature)
-        await self._messenger.publish(self, "available", True)
+        await self._mqtt.publish(self, "temperature_state", temperature)
+        await self._mqtt.publish(self, "available", True)

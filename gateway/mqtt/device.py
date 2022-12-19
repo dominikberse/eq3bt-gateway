@@ -4,10 +4,11 @@ import asyncio
 
 
 class HassMqttDevice:
-    def __init__(self, id, config, messenger):
+    def __init__(self, id, config, mqtt, ble):
         self._id = id
         self._config = config
-        self._messenger = messenger
+        self._mqtt = mqtt
+        self._ble = ble
 
     def __str__(self):
         return f"{self._id} ({self._config.optional('mac')})"
@@ -41,9 +42,8 @@ class HassMqttDevice:
                 await callback(*args, **kwargs)
                 return True
             except asyncio.CancelledError:
+                # ensure cancellation is not swallowed
                 raise
-            except KeyboardInterrupt:
-                return
             except:
                 logging.exception(f"{log} failed (retry: {i})")
 
@@ -66,7 +66,7 @@ class HassMqttDevice:
         await self.config()
 
         # listen for incoming MQTT messages
-        async with self._messenger.filtered_messages(self) as messages:
+        async with self._mqtt.filtered_messages(self) as messages:
             async for message in messages:
                 logging.debug(
                     f"Received message on {message.topic}:\n{message.payload}"
@@ -79,9 +79,7 @@ class HassMqttDevice:
                 try:
                     # get handler from command name
                     handler = getattr(self, f"_mqtt_{command}")
-                except asyncio.CancelledError:
-                    raise
-                except:
+                except AttributeError:
                     logging.debug(f"Missing handler for command {command}")
                     continue
 

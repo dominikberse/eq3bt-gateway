@@ -58,7 +58,7 @@ class Device(HassMqttDevice, RetryMixin, AvailabilityMixin, PairMixin):
 
         # availability mixin
         self._availability_retries = Device.AVAILABILITY_RETRIES
-        self._availability = Device.AVAILABILITY_RETRIES
+        self._availability = 0
 
         # validate device data
         self._address = self._config.require("mac")

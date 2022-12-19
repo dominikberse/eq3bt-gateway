@@ -12,7 +12,7 @@ from tools import Tasks
 from tools import Config
 
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.WARNING)
 
 
 async def run(args):

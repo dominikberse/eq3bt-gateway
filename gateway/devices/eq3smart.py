@@ -143,7 +143,7 @@ class Device(HassMqttDevice, RetryMixin, AvailabilityMixin, PairMixin):
             "precision": 0.5,
         }
 
-        await self._mqtt.publish(self, "config", message)
+        await self._mqtt.publish(self, "config", message, retain=True)
         await self._pull()
 
         self._ready.set()
@@ -268,16 +268,16 @@ class Device(HassMqttDevice, RetryMixin, AvailabilityMixin, PairMixin):
             or mode == Mode.Unknown
         ):
             # deny availability
-            await self._mqtt.publish(self, "available", False)
+            await self._mqtt.publish(self, "available", False, retain=True)
             return
 
         # translate mode
         if self._thermostat.mode == Mode.Closed:
-            await self._mqtt.publish(self, "mode_state", "off")
+            await self._mqtt.publish(self, "mode_state", "off", retain=True)
         if self._thermostat.mode == Mode.Auto:
-            await self._mqtt.publish(self, "mode_state", "auto")
+            await self._mqtt.publish(self, "mode_state", "auto", retain=True)
         if self._thermostat.mode in [Mode.Boost, Mode.Open, Mode.Manual]:
-            await self._mqtt.publish(self, "mode_state", "heat")
+            await self._mqtt.publish(self, "mode_state", "heat", retain=True)
 
-        await self._mqtt.publish(self, "temperature_state", temperature)
-        await self._mqtt.publish(self, "available", True)
+        await self._mqtt.publish(self, "temperature_state", temperature, retain=True)
+        await self._mqtt.publish(self, "available", True, retain=True)

@@ -203,20 +203,25 @@ class Device(HassMqttDevice, RetryMixin, AvailabilityMixin, PairMixin):
 
     async def _push(self):
         patch = self._state.get_patch()
+        updated = {}
 
         temperature = patch.get("temperature")
         if temperature is not None:
             # generate message
             self._thermostat.target_temperature = temperature
             # send message
-            self.set_availability(
-                await self._retry(
-                    self._write,
-                    f"Set temp on {self} to {temperature}",
-                    raise_exception=False,
-                    args=[self._message],
-                )
+            success = await self._retry(
+                self._write,
+                f"Set temp on {self} to {temperature}",
+                raise_exception=False,
+                args=[self._message],
             )
+            if success:
+                updated["temperature"] = temperature
+
+        # update remote state on successful set
+        # TODO: maybe implement mechanism to re-validate with update
+        self._state.merge_remote(updated)
 
         # publish new state to Home Assistant
         await self._publish_device_state()

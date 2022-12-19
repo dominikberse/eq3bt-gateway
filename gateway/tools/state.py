@@ -14,35 +14,36 @@ class State:
 
         # pending update state
         self._local = {}
-        # physical device state
+        # latest device state
         self._remote = {}
-        # latest state
-        self._base = {}
+
+    def __str__(self):
+        return f"Remote {self._remote}\nLocal {self._local}\n"
 
     def merge_remote(self, changes):
         """
         Merge a new device state
         """
 
-        for key, remote in changes:
+        for key, remote in changes.items():
             local = self._local.get(key)
-            base = self._base.get(key)
+            base = self._remote.get(key)
 
             # remote state changed without pending update
             if remote != base and local == base:
                 self._local[key] = remote
-                self._base[key] = remote
+                self._remote[key] = remote
 
             # remote state changed with pending update
             if remote != base and self._prefer_remote:
                 self._local[key] = remote
-                self._base[key] = remote
+                self._remote[key] = remote
 
             # remote state changed according to pending update
             if local == remote:
-                self._base[key] = remote
+                self._remote[key] = remote
 
-        logging.debug(f"State merged {changes}")
+        logging.debug(f"State merged {changes}\n{self}")
 
     def push_local(self, local):
         """
@@ -50,11 +51,11 @@ class State:
         """
 
         # mark local changes as pending updates
-        for key, value in local:
+        for key, value in local.items():
             if self._local.get(key) != value:
                 self._local[key] = value
 
-        logging.debug(f"State pushed {local}")
+        logging.debug(f"State pushed {local}\n{self}")
 
     def get_patch(self):
         """
@@ -64,16 +65,16 @@ class State:
         patch = {}
 
         # get all pending updates
-        for key, local in self._local:
-            remote = self._remote.get(key)
-            base = self._base.get(key)
-
-            # local state changed and overrides device changes
-            if local != base and not self._prefer_remote:
+        for key, local in self._local.items():
+            if local != self._remote.get(key):
                 patch[key] = local
 
-            # local state changed without device changes
-            if local != base and remote == base:
-                patch[key] = local
+        logging.debug(f"State patching {patch}\n{self}")
 
-        logging.debug(f"State patching {patch}")
+        return patch
+
+    def remote(self, key):
+        return self._remote.get(key)
+
+    def local(self, key):
+        return self._local.get(key)

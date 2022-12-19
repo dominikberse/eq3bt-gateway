@@ -1,7 +1,5 @@
 import logging
-import pexpect
 import asyncio
-import sys
 
 from eq3bt.eq3btsmart import Thermostat, Mode
 from eq3bt.eq3btsmart import (
@@ -34,6 +32,12 @@ from bleak.exc import BleakDeviceNotFoundError
 from mqtt import HassMqttDevice
 from ble import BleConnection
 
+from tools import State
+
+from .mixins.retry import RetryMixin
+from .mixins.availability import AvailabilityMixin
+from .mixins.pair import PairMixin
+
 
 class DummyConnection:
     def __init__(self, address, interface):
@@ -46,9 +50,15 @@ class DummyConnection:
         pass
 
 
-class Device(HassMqttDevice):
+class Device(HassMqttDevice, RetryMixin, AvailabilityMixin, PairMixin):
+    AVAILABILITY_RETRIES = 5
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
+        # availability mixin
+        self._availability_retries = Device.AVAILABILITY_RETRIES
+        self._availability = Device.AVAILABILITY_RETRIES
 
         # validate device data
         self._address = self._config.require("mac")
@@ -60,8 +70,7 @@ class Device(HassMqttDevice):
 
         # retained data
         self._thermostat = Thermostat(None, self, DummyConnection)
-        self._availability = False
-        self._temperature = None
+        self._state = State()
 
         # listening event
         self._ready = asyncio.Event()
@@ -71,63 +80,6 @@ class Device(HassMqttDevice):
     @property
     def component(self):
         return "climate"
-
-    def set_availability(self, value):
-        if value == self._availability:
-            return
-
-        logging.info(f"{self} availability: {value}")
-        self._availability = value
-
-    async def _bluetooth_ctl_pair(self):
-        """
-        Hacky method to automatically pair a device
-        """
-
-        p = pexpect.spawn("bluetoothctl", encoding="utf-8")
-
-        if logging.getLogger().level <= logging.DEBUG:
-            # log to console if debugging
-            p.logfile_read = sys.stdout
-
-        deleted = [f"DEL.*{self._address}", f"{self._address} not available"]
-        detected = [f"NEW.*{self._address}"]
-        passkey = ["Enter passkey.*:"]
-        paired = ["Paired: yes", "Failed to pair"]
-        trusted = ["Trusted: yes"]
-
-        # start scanning
-        p.sendline()
-        p.expect("#")
-        p.sendline(f"remove {self._address}")
-        p.expect(deleted)
-        p.sendline("scan on")
-
-        try:
-
-            # wait for device to be detected
-            p.expect(detected, timeout=10)
-
-            # pair and trust device
-            p.sendline(f"pair {self._address}")
-            if p.expect(passkey, timeout=10) != 0:
-                raise Exception("Passkey not accepted")
-            p.sendline(self._pass)
-            if p.expect(paired, timeout=10) != 0:
-                raise Exception("Failed to pair")
-            p.sendline(f"trust {self._address}")
-            if p.expect(trusted, timeout=10) != 0:
-                raise Exception("Failed to trust")
-
-            # disconnect
-            p.expect("#")
-            p.sendline("disconnect")
-            p.expect("#")
-
-        finally:
-
-            p.sendline("quit")
-            p.close()
 
     async def _on_notify(self, characteristic, data):
 
@@ -143,16 +95,18 @@ class Device(HassMqttDevice):
                 await client.write_gatt_char(PROP_WRITE_HANDLE - 1, value)
         except BleakDeviceNotFoundError:
             self._connection.lost()
+            raise
 
     async def _query(self, value):
         try:
             async with self._connection as client:
                 await client.start_notify(PROP_NTFY_HANDLE - 1, self._on_notify)
-                await client.write_gatt_char(PROP_WRITE_HANDLE - 1, self._message)
+                await client.write_gatt_char(PROP_WRITE_HANDLE - 1, value)
 
                 await asyncio.wait([self._event.wait()], timeout=15)
         except BleakDeviceNotFoundError:
             self._connection.lost()
+            raise
 
     async def setup(self):
 
@@ -190,7 +144,7 @@ class Device(HassMqttDevice):
         }
 
         await self._mqtt.publish(self, "config", message)
-        await self._update()
+        await self._pull()
 
         self._ready.set()
 
@@ -208,7 +162,9 @@ class Device(HassMqttDevice):
 
             try:
                 logging.debug(f"{self} polling new state")
-                await self._update()
+                await self._pull()
+                await self._push()
+
             except asyncio.CancelledError:
                 # graceful exit
                 return
@@ -216,67 +172,106 @@ class Device(HassMqttDevice):
                 # suppress error and continue polling
                 logging.exception(f"Exception in polling loop")
 
-    async def _update(self):
+    async def _pull(self):
+        """
+        Pull remote state from device
+        """
 
         # generate message
         self._thermostat.update()
-
         # send message
-        available = await self._retry(
+        success = await self._retry(
             self._query,
             f"Update {self}",
             raise_exception=False,
             args=[self._message],
         )
 
-        # update settings if device is available again
-        # currently server settings have priority
-        # TODO: write some kind of state tracking system
-        if available and not self._availability:
-            if self._temperature:
-                self._mqtt_temperature_set(self._temperature)
+        self.set_availability(success)
 
-        self.set_availability(available)
+        # merge retrieved state
+        if success:
+            self._state.merge_remote(
+                {
+                    "temperature": self._thermostat.target_temperature,
+                    "mode": self._thermostat.mode,
+                }
+            )
 
-        # check if this is the first time the state is retrieved
-        # store current state as application state
-        if self._availability:
-            if self._temperature is None:
-                self._temperature = self._thermostat.target_temperature
+        # publish new state to Home Assistant
+        await self._publish_device_state()
 
-        # push new state
-        await self._publish_device_state(self._thermostat.target_temperature)
+    async def _push(self):
+        patch = self._state.get_patch()
+
+        temperature = patch.get("temperature")
+        if temperature is not None:
+            # generate message
+            self._thermostat.target_temperature = temperature
+            # send message
+            self.set_availability(
+                await self._retry(
+                    self._write,
+                    f"Set temp on {self} to {temperature}",
+                    raise_exception=False,
+                    args=[self._message],
+                )
+            )
+
+        # publish new state to Home Assistant
+        await self._publish_device_state()
 
     async def _mqtt_temperature_set(self, temperature):
-        logging.info(f"Setting temp to {temperature}")
-
-        self._temperature = temperature
-
-        # generate message
-        self._thermostat.target_temperature = temperature
-
-        # send message
-        self.set_availability(
-            await self._retry(
-                self._write,
-                f"Set temp on {self} to {temperature}",
-                raise_exception=False,
-                args=[self._message],
+        if temperature == EQ3BT_MIN_TEMP:
+            self._state.push_local(
+                {
+                    "mode": Mode.Closed,
+                    "temperature": EQ3BT_MIN_TEMP,
+                }
             )
-        )
+        else:
+            self._state.push_local(
+                {
+                    "mode": Mode.Manual,
+                    "temperature": temperature,
+                }
+            )
 
-        # push new state
-        await self._publish_device_state(temperature)
+        # push device state
+        await self._push()
 
-    async def _publish_device_state(self, temperature):
-        if not self._availability or temperature == Mode.Unknown:
-            # deny availability if temperature has not been read
+    async def _mqtt_mode_set(self, mode):
+        if mode == "off":
+            self._state.push_local({"mode": Mode.Closed})
+        elif mode == "heat":
+            self._state.push_local({"mode": Mode.Manual})
+        else:
+            raise Exception("Unknown mode")
+
+        # push device state
+        await self._push()
+
+    async def _publish_device_state(self):
+
+        # optimistic updates (use local state)
+        temperature = self._state.local("temperature")
+        mode = self._state.local("mode")
+
+        if (
+            not self._availability
+            or temperature == Mode.Unknown
+            or mode == Mode.Unknown
+        ):
+            # deny availability
             await self._mqtt.publish(self, "available", False)
             return
 
-        if temperature == EQ3BT_MIN_TEMP:
+        # translate mode
+        if self._thermostat.mode == Mode.Closed:
             await self._mqtt.publish(self, "mode_state", "off")
-        else:
+        if self._thermostat.mode == Mode.Auto:
+            await self._mqtt.publish(self, "mode_state", "auto")
+        if self._thermostat.mode in [Mode.Boost, Mode.Open, Mode.Manual]:
             await self._mqtt.publish(self, "mode_state", "heat")
 
         await self._mqtt.publish(self, "temperature_state", temperature)

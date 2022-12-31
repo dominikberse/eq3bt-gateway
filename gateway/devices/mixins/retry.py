@@ -22,6 +22,7 @@ class RetryMixin:
         for i in range(retries):
             try:
                 await callback(*args, **kwargs)
+                logging.info(f"{log} succeeded")
                 return True
             except asyncio.CancelledError:
                 # ensure cancellation is not swallowed

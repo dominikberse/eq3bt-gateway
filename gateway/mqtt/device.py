@@ -47,11 +47,18 @@ class HassMqttDevice:
                     logging.debug(f"Missing handler for command {command}")
                     continue
 
-                if message.payload:
-                    # should be compatible with Home Assistant messages
-                    payload = json.loads(message.payload.decode())
+                try:
+                    if message.payload:
+                        # TODO: let device specify message format (i.e. JSON)
+                        payload = message.payload.decode()
 
-                await handler(payload)
+                    await handler(payload)
+                except asyncio.CancelledError:
+                    # ensure cancellation is not swallowed
+                    raise
+                except:
+                    logging.debug(f"Failed to handle message {command}")
+                    continue
 
     async def poll(self):
         """

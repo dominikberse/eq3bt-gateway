@@ -227,6 +227,8 @@ class Device(HassMqttDevice, RetryMixin, AvailabilityMixin, PairMixin):
         await self._publish_device_state()
 
     async def _mqtt_temperature_set(self, temperature):
+        temperature = int(temperature)
+
         if temperature == EQ3BT_MIN_TEMP:
             self._state.push_local(
                 {

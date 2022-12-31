@@ -203,39 +203,47 @@ class Device(HassMqttDevice, RetryMixin, AvailabilityMixin, PairMixin):
 
     async def _push(self):
         patch = self._state.get_patch()
-        updated = {}
-
-        mode = patch.get("mode")
-        if mode is not None:
-            # generate message
-            self._thermostat.set_mode(mode)
-            # send message
-            success = await self._retry(
-                self._write,
-                f"Set mode on {self} to {mode}",
-                raise_exception=False,
-                args=[self._message],
-            )
-            if success:
-                updated["mode"] = mode
-
         temperature = patch.get("temperature")
+        mode = patch.get("mode")
+        success = True
+
         if temperature is not None:
             # generate message
             self._thermostat.target_temperature = temperature
             # send message
-            success = await self._retry(
-                self._write,
-                f"Set temp on {self} to {temperature}",
-                raise_exception=False,
-                args=[self._message],
+            success = (
+                await self._retry(
+                    self._write,
+                    f"Set temp on {self} to {temperature}",
+                    raise_exception=False,
+                    args=[self._message],
+                )
+                and success
             )
-            if success:
-                updated["temperature"] = temperature
+
+        if mode is not None:
+            # generate message
+            self._thermostat.mode = mode
+            # send message
+            success = (
+                await self._retry(
+                    self._write,
+                    f"Set mode on {self} to {mode}",
+                    raise_exception=False,
+                    args=[self._message],
+                )
+                and success
+            )
 
         # update remote state on successful set
         # TODO: maybe implement mechanism to re-validate with update
-        self._state.merge_remote(updated)
+        if success:
+            self._state.merge_remote(
+                {
+                    "temperature": self._thermostat.target_temperature,
+                    "mode": self._thermostat.mode,
+                }
+            )
 
         # publish new state to Home Assistant
         await self._publish_device_state()

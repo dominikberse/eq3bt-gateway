@@ -241,7 +241,7 @@ class Device(HassMqttDevice, RetryMixin, AvailabilityMixin, PairMixin):
         await self._publish_device_state()
 
     async def _mqtt_temperature_set(self, temperature):
-        temperature = int(temperature)
+        temperature = float(temperature)
 
         # manual temperature
         self._state.push_local(

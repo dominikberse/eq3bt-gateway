@@ -205,6 +205,20 @@ class Device(HassMqttDevice, RetryMixin, AvailabilityMixin, PairMixin):
         patch = self._state.get_patch()
         updated = {}
 
+        mode = patch.get("mode")
+        if mode is not None:
+            # generate message
+            self._thermostat.set_mode(mode)
+            # send message
+            success = await self._retry(
+                self._write,
+                f"Set mode on {self} to {mode}",
+                raise_exception=False,
+                args=[self._message],
+            )
+            if success:
+                updated["mode"] = mode
+
         temperature = patch.get("temperature")
         if temperature is not None:
             # generate message
@@ -229,20 +243,13 @@ class Device(HassMqttDevice, RetryMixin, AvailabilityMixin, PairMixin):
     async def _mqtt_temperature_set(self, temperature):
         temperature = int(temperature)
 
-        if temperature == EQ3BT_MIN_TEMP:
-            self._state.push_local(
-                {
-                    "mode": Mode.Closed,
-                    "temperature": EQ3BT_MIN_TEMP,
-                }
-            )
-        else:
-            self._state.push_local(
-                {
-                    "mode": Mode.Manual,
-                    "temperature": temperature,
-                }
-            )
+        # manual temperature
+        self._state.push_local(
+            {
+                "mode": Mode.Manual,
+                "temperature": temperature,
+            }
+        )
 
         # push device state
         await self._push()
@@ -252,6 +259,8 @@ class Device(HassMqttDevice, RetryMixin, AvailabilityMixin, PairMixin):
             self._state.push_local({"mode": Mode.Closed})
         elif mode == "heat":
             self._state.push_local({"mode": Mode.Manual})
+        elif mode == "auto":
+            self._state.push_local({"mode": Mode.Auto})
         else:
             raise Exception("Unknown mode")
 
@@ -274,11 +283,11 @@ class Device(HassMqttDevice, RetryMixin, AvailabilityMixin, PairMixin):
             return
 
         # translate mode
-        if self._thermostat.mode == Mode.Closed:
+        if mode == Mode.Closed:
             await self._mqtt.publish(self, "mode_state", "off", retain=True)
-        if self._thermostat.mode == Mode.Auto:
+        if mode == Mode.Auto:
             await self._mqtt.publish(self, "mode_state", "auto", retain=True)
-        if self._thermostat.mode in [Mode.Boost, Mode.Open, Mode.Manual]:
+        if mode in [Mode.Boost, Mode.Open, Mode.Manual]:
             await self._mqtt.publish(self, "mode_state", "heat", retain=True)
 
         await self._mqtt.publish(self, "temperature_state", temperature, retain=True)

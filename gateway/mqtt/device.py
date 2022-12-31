@@ -57,7 +57,7 @@ class HassMqttDevice:
                     # ensure cancellation is not swallowed
                     raise
                 except:
-                    logging.debug(f"Failed to handle message {command}")
+                    logging.exception(f"Failed to handle message {command}")
                     continue
 
     async def poll(self):
